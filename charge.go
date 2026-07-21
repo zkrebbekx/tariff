@@ -144,8 +144,12 @@ func (c Charge) Rate(quantity int64) (Result, error) {
 	}
 
 	if c.FlatFee != 0 {
+		total, err := addInt64(res.Total, c.FlatFee)
+		if err != nil {
+			return Result{}, err
+		}
 		res.Lines = append(res.Lines, Line{Subtotal: c.FlatFee})
-		res.Total += c.FlatFee
+		res.Total = total
 	}
 	return res, nil
 }
@@ -311,6 +315,18 @@ func mulInt64(a, b int64) (int64, error) {
 	z := new(big.Int).Mul(big.NewInt(a), big.NewInt(b))
 	if !z.IsInt64() {
 		return 0, fmt.Errorf("%w: %s", ErrOverflow, z.String())
+	}
+	return z.Int64(), nil
+}
+
+// addInt64 adds two amounts, reporting ErrOverflow rather than wrapping to a
+// wrong-sign total. It is the guard on the one arithmetic step the rate path
+// would otherwise do unchecked: folding a flat fee into an already-large rated
+// total.
+func addInt64(a, b int64) (int64, error) {
+	z := new(big.Int).Add(big.NewInt(a), big.NewInt(b))
+	if !z.IsInt64() {
+		return 0, fmt.Errorf("%w: %d + %d", ErrOverflow, a, b)
 	}
 	return z.Int64(), nil
 }

@@ -139,11 +139,23 @@ the block ceil (package). Composes with every model.
 When a single amount must be split across parts (proration remainders, or
 splitting a rounded total back across tiers so the line items sum to the
 rounded whole), tariff distributes the floor to each part and hands the leftover
-minor units out **round-robin from the first part**, so nothing is lost and the
-result is deterministic. This is the `Allocate(ratios…)` semantics `go-money`
-documents; tariff implements it directly against golden tests rather than taking
-the dependency. Property under test: the parts always sum **exactly** to the
-input, for any ratios and any remainder.
+minor units to the parts with the **largest fractional remainder** (the
+largest-remainder / Hamilton method), ties broken by position. Nothing is lost,
+the result is deterministic, and — unlike a round-robin-from-first split — no
+part receives a penny it did not round up: a zero-rate (free) tier stays at
+zero and an exactly-whole tier keeps its exact amount. Property under test: the
+parts always sum **exactly** to the input, for any ratios and any remainder,
+and a zero weight receives zero.
+
+> **Correction, found in phase-1 review.** The first implementation handed the
+> leftover minor units out round-robin from the first part (the `go-money`
+> `Allocate` semantics). That keeps the sum exact but *misattributes* the
+> pennies: a free tier showed a 1¢ charge, and an exact $35.00 tier showed
+> $35.01, because the earliest lines always absorbed the remainder regardless
+> of whether they had rounded up. Largest-remainder fixes the attribution while
+> preserving the exact-sum invariant. This deliberately departs from the
+> `go-money` semantics the money layer documents — for a rating library the
+> per-line amount must not lie, even when the total is right.
 
 ## Shape (indicative — the review will pressure-test it)
 
@@ -248,3 +260,14 @@ Resolutions and refinements against the sketch above:
   *rises* from $65.00 to $66.00, because `11×6 > 10×6.5`. The decrease property
   is real but requires the rate to fall faster than the quantity grows; the test
   demonstrates it with `1–10 @ $10, 11+ @ $1` (10→11 falls $100.00 → $11.00).
+
+### Corrections found in phase-1 review
+
+- **The flat-fee add was the one unguarded arithmetic step.** Every multiply and
+  round in the rate path checks for int64 overflow, but folding `FlatFee` into
+  the rated total did not — a total near `MaxInt64` plus any fee wrapped to a
+  negative invoice with no error. Now an `addInt64` guard returns `ErrOverflow`
+  like the rest of the path.
+- **Round-robin allocation misattributed pennies.** See the Correction under
+  *Allocation* above: replaced with largest-remainder so free and exact tiers
+  keep their true amounts and a zero-ratio `Allocate` part receives zero.

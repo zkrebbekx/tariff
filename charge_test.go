@@ -195,10 +195,14 @@ func TestGraduatedReconciliation(t *testing.T) {
 			})
 
 			t.Run("Then the allocated lines sum exactly to the total", func(t *testing.T) {
+				// The 2 leftover minor units land on the tiers with the largest
+				// proportional remainder (the $0.205 and $0.305 tiers), not on
+				// the first-listed tier — so no tier is credited a penny it did
+				// not earn.
 				checkResult(t, res, 62, []wantLine{
-					{quantity: 1, subtotal: 11, rate: rat(21, 200)},
+					{quantity: 1, subtotal: 10, rate: rat(21, 200)},
 					{quantity: 1, subtotal: 21, rate: rat(41, 200)},
-					{quantity: 1, subtotal: 30, rate: rat(61, 200)},
+					{quantity: 1, subtotal: 31, rate: rat(61, 200)},
 				})
 			})
 		})
@@ -530,6 +534,65 @@ func TestOverflow(t *testing.T) {
 			c := Charge{Model: Volume, Currency: JPY(RoundHalfUp), Tiers: []Tier{{Last: true, UnitRate: rat(2, 1)}}}
 			if _, err := c.Rate(math.MaxInt64); !errors.Is(err, ErrOverflow) {
 				t.Errorf("error = %v, want ErrOverflow", err)
+			}
+		})
+
+		t.Run("When folding a flat fee into a near-maximum rated total", func(t *testing.T) {
+			// Regression: the flat-fee add was the one unguarded arithmetic step;
+			// a rated total of MaxInt64 plus any flat fee wrapped to a negative
+			// invoice with no error. It must overflow-error like every other step.
+			c := Charge{Model: PerUnit, Currency: JPY(RoundHalfUp), UnitRate: rat(1, 1), FlatFee: 1}
+			got, err := c.Rate(math.MaxInt64)
+			if !errors.Is(err, ErrOverflow) {
+				t.Fatalf("error = %v (total %d), want ErrOverflow — a flat fee must never wrap the total negative", err, got.Total)
+			}
+		})
+	})
+}
+
+// TestGraduatedReconciliationAttribution pins that the largest-remainder split
+// never credits a penny to a tier that did not round up: a free (zero-rate)
+// tier stays at zero, and an exactly-whole tier keeps its exact amount.
+func TestGraduatedReconciliationAttribution(t *testing.T) {
+	usd := USD(RoundHalfUp)
+
+	t.Run("Given a free tier beside two that round up", func(t *testing.T) {
+		c := Charge{Model: Graduated, Currency: usd, Tiers: []Tier{
+			{UpTo: 1, UnitRate: rat(0, 1)},    // free
+			{UpTo: 2, UnitRate: rat(1, 3)},    // $0.333...
+			{Last: true, UnitRate: rat(1, 3)}, // $0.333...
+		}}
+		res, err := c.Rate(3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Run("Then the free tier's line is exactly zero", func(t *testing.T) {
+			if res.Lines[0].Subtotal != 0 {
+				t.Fatalf("free tier subtotal = %d, want 0 — a $0.00 tier must not show a charge", res.Lines[0].Subtotal)
+			}
+			if res.Total != 67 || res.Lines[1].Subtotal+res.Lines[2].Subtotal != 67 {
+				t.Fatalf("lines = %d/%d/%d total %d, want 0/34/33 total 67",
+					res.Lines[0].Subtotal, res.Lines[1].Subtotal, res.Lines[2].Subtotal, res.Total)
+			}
+		})
+	})
+
+	t.Run("Given an exactly-whole tier beside two half-cent tiers", func(t *testing.T) {
+		c := Charge{Model: Graduated, Currency: usd, Tiers: []Tier{
+			{UpTo: 50, UnitRate: rat(7, 10)},     // 50 x $0.70 = exactly $35.00
+			{UpTo: 51, UnitRate: rat(21, 200)},   // $0.105
+			{Last: true, UnitRate: rat(21, 200)}, // $0.105
+		}}
+		res, err := c.Rate(52)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Run("Then the exact $35.00 tier keeps exactly 3500, not 3501", func(t *testing.T) {
+			if res.Lines[0].Subtotal != 3500 {
+				t.Fatalf("exact tier subtotal = %d, want 3500 — an exactly-whole tier must not absorb a rounding penny", res.Lines[0].Subtotal)
+			}
+			if res.Total != 3521 {
+				t.Fatalf("total = %d, want 3521", res.Total)
 			}
 		})
 	})

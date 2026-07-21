@@ -80,11 +80,11 @@ func Example_reconciliation() {
 	}
 	fmt.Printf("total=%d lines=%d+%d+%d sum=%d\n",
 		res.Total, res.Lines[0].Subtotal, res.Lines[1].Subtotal, res.Lines[2].Subtotal, sum)
-	// Output: total=62 lines=11+21+30 sum=62
+	// Output: total=62 lines=10+21+31 sum=62
 }
 
 // Example_allocate splits a rounded total across parts by ratio, losing
-// nothing: the leftover cent goes to the first part.
+// nothing: with equal ratios the leftover cent goes to the first part.
 func Example_allocate() {
 	shares, _ := tariff.Allocate(100, []int64{1, 1, 1})
 	fmt.Println(shares)

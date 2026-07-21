@@ -63,13 +63,14 @@ func TestAllocate(t *testing.T) {
 		t.Run("When split across weighted ratios", func(t *testing.T) {
 			t.Run("Then shares follow the weights and still sum to the total", func(t *testing.T) {
 				// 62 across [105, 205, 305] mirrors the graduated reconciliation
-				// path: floors 10/20/30 sum to 60, the 2 leftover go to the
-				// first two parts.
+				// path: floors 10/20/30 sum to 60; the 2 leftover units go to the
+				// two parts with the largest proportional remainder (410 and 460,
+				// parts 1 and 2), not round-robin from the first.
 				got, err := Allocate(62, []int64{105, 205, 305})
 				if err != nil {
 					t.Fatal(err)
 				}
-				want := []int64{11, 21, 30}
+				want := []int64{10, 21, 31}
 				for i := range want {
 					if got[i] != want[i] {
 						t.Fatalf("Allocate = %v, want %v", got, want)
@@ -93,6 +94,26 @@ func TestAllocate(t *testing.T) {
 				for i := range want {
 					if got[i] != want[i] {
 						t.Fatalf("Allocate = %v, want %v", got, want)
+					}
+				}
+			})
+		})
+	})
+
+	t.Run("Given a ratio of zero among non-zero ratios", func(t *testing.T) {
+		t.Run("When a total with a leftover is allocated", func(t *testing.T) {
+			t.Run("Then the zero ratio receives zero, not a stray penny", func(t *testing.T) {
+				// Regression: round-robin-from-first handed part 0 a penny here,
+				// giving [1 3 3]. Largest-remainder gives the zero-weight part
+				// its exact zero share.
+				got, err := Allocate(7, []int64{0, 1, 1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := []int64{0, 4, 3}
+				for i := range want {
+					if got[i] != want[i] {
+						t.Fatalf("Allocate(7, [0 1 1]) = %v, want %v", got, want)
 					}
 				}
 			})
