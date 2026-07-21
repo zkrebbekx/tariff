@@ -1,0 +1,7 @@
+*.out
+*.html
+*.test
+/bin
+bin/
+coverage.txt
+/examples/examples
