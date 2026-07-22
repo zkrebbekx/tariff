@@ -52,4 +52,19 @@ var (
 	// ErrUnknownModel is returned when a charge names a rating model that this
 	// package does not implement.
 	ErrUnknownModel = errors.New("tariff: unknown rating model")
+
+	// ErrBadPeriod is returned when a billing [Period] is unusable: its End is
+	// not strictly after its Start, or a day-based [Basis] is applied to a
+	// period that spans no whole calendar day (so the day denominator is zero).
+	ErrBadPeriod = errors.New("tariff: invalid billing period")
+
+	// ErrBadWindow is returned by [Period.Fraction] when the window is
+	// incoherent — from is after to — or by [Prorate] when the fraction is nil.
+	// A window that simply falls outside the period is not an error; it clamps
+	// to a zero fraction.
+	ErrBadWindow = errors.New("tariff: invalid proration window")
+
+	// ErrBadBasis is returned by [Period.Fraction] when the proration [Basis]
+	// is not one this package implements.
+	ErrBadBasis = errors.New("tariff: unknown proration basis")
 )
