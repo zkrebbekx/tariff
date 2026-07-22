@@ -21,7 +21,9 @@ jobs:
       fail-fast: false
       matrix:
         go: ["1.23", "1.24", "1.25"]
-        module: [".", "examples"]
+        # tariffd is a nested module (github.com/zkrebbekx/tariff/tariffd) with a
+        # replace back to the root; it is stateless compute and needs no service.
+        module: [".", "examples", "tariffd"]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -36,8 +38,12 @@ jobs:
         run: go test -race -timeout 60s ./...
 
   lint:
-    name: lint
+    name: lint (${{ matrix.module }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [".", "tariffd"]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -46,7 +52,9 @@ jobs:
         with:
           go-version: "1.24"
           cache: true
+          cache-dependency-path: ${{ matrix.module }}/go.mod
       - name: golangci-lint
         uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9
         with:
           version: latest
+          working-directory: ${{ matrix.module }}
