@@ -104,6 +104,20 @@ func (s *Server) respondError(w http.ResponseWriter, r *http.Request, err error)
 		return
 	}
 	// A recognised 4xx: the tariff message is safe and useful to return — it
-	// names the field, not an internal detail.
-	writeJSON(w, status, errorBody{Error: err.Error(), Code: code})
+	// names the field, not an internal detail. Truncate it defensively: an
+	// overflow message can echo a very large number, and a response should not
+	// amplify a small request into a huge body.
+	writeJSON(w, status, errorBody{Error: truncateMessage(err.Error()), Code: code})
+}
+
+// maxMessageLen caps an error message returned to a caller, so that a sentinel
+// like overflow — whose message can embed a large number — cannot turn a small
+// request into a large response.
+const maxMessageLen = 300
+
+func truncateMessage(s string) string {
+	if len(s) <= maxMessageLen {
+		return s
+	}
+	return s[:maxMessageLen] + "…"
 }

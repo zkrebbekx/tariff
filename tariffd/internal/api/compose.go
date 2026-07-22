@@ -74,6 +74,11 @@ type parsedStep struct {
 	label   string
 }
 
+// maxComposeSteps bounds the number of steps in one composition. The effect
+// pass is O(n²); this keeps a hostile body from turning that into seconds of
+// CPU. Far more than any real invoice needs.
+const maxComposeSteps = 512
+
 // parseSteps validates and parses each wire step. Rate/percentage strings are
 // parsed here (a malformed one is invalid_argument); structural validity — a
 // nil percentage, a negative floor, a mismatched charge currency — is left to
@@ -171,6 +176,14 @@ func (s *Server) handleCompose(w http.ResponseWriter, r *http.Request) {
 	var req composeRequest
 	if err := decodeBody(w, r, &req); err != nil {
 		s.respondError(w, r, err)
+		return
+	}
+	// The per-step effect pass re-composes every prefix, so effort is O(n²) in
+	// the step count. A real invoice carries a handful of steps; cap the count
+	// so a body packed with thousands cannot peg a core for tens of seconds.
+	if len(req.Steps) > maxComposeSteps {
+		s.respondError(w, r, badRequest("invalid_argument", fmt.Sprintf(
+			"a composition may have at most %d steps; got %d", maxComposeSteps, len(req.Steps))))
 		return
 	}
 	cur, err := req.Currency.toCurrency()
