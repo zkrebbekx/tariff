@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://zkrebbekx.github.io/tariff/">
+    <img src="docs/assets/social-preview.png" alt="tariff — usage-based billing rating for Go" width="720">
+  </a>
+</p>
+
 # tariff
 
 A pure-Go usage-billing **rating core** — a price-plan component plus a usage
