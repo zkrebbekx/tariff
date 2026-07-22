@@ -223,18 +223,20 @@ Errors are typed sentinels (`ErrNegativeQuantity`, `ErrEmptyTiers`,
 
 Implemented and shipped: per-unit, graduated, volume, package/block, stairstep,
 free allowances; exact `*big.Rat` rate arithmetic; explicit per-currency
-rounding; the round-robin allocator; ≥95% coverage (99.6%), zero-dependency,
-sibling house style. All golden vectors reproduce exactly.
+rounding; the largest-remainder allocator; ≥95% coverage (99.6%),
+zero-dependency, sibling house style. All golden vectors reproduce exactly.
 
 Resolutions and refinements against the sketch above:
 
 - **Open question 2 (line-item reconciliation) — resolved by allocation.**
   A graduated charge rates each tier exactly, sums exactly, rounds the total
   **once**, then allocates the rounded total back across the tier lines with the
-  round-robin allocator, so `sum(lines) == Total` exactly. The golden test
+  largest-remainder allocator, so `sum(lines) == Total` exactly *and* no line is
+  credited a penny it did not round up. The golden test
   `TestGraduatedReconciliation` uses three tiers of $0.105 / $0.205 / $0.305:
   independent half-up per-line rounding drifts to 63c, the once-rounded total is
-  62c, and allocation yields lines `11 + 21 + 30 = 62`.
+  62c, and allocation yields lines `10 + 21 + 31 = 62` (the leftover lands on the
+  two larger tiers by proportional remainder — see the Allocation Correction).
 - **Open question 3 (minor-unit scale) — confirmed currency-driven.** `Currency`
   carries `Decimals`; the scale is `10^Decimals` as a `*big.Rat`, exercised by
   JPY (0) and KWD (3) tests. Never hardcoded to cents.
@@ -271,3 +273,116 @@ Resolutions and refinements against the sketch above:
 - **Round-robin allocation misattributed pennies.** See the Correction under
   *Allocation* above: replaced with largest-remainder so free and exact tiers
   keep their true amounts and a zero-ratio `Allocate` part receives zero.
+
+## Phase 2 — proration and composition
+
+Two additions, both grounded in verified cross-vendor mechanics (Stripe and
+Chargebee agree on the proration model; vendor docs deliberately under-specify
+the composition order, which is why tariff makes it explicit).
+
+### Proration
+
+The question: a subscription priced per billing period changes mid-period —
+what is charged? The cross-vendor standard is **credit-unused + charge-new +
+net**, not true-forward:
+
+> Stripe (verbatim): "the customer is billed an additional 5 USD: −5 USD for
+> unused time on the initial price, and 10 USD for the remaining time on the new
+> price." Default `proration_behavior=create_prorations`, prorated **to the
+> second**.
+> Chargebee (verbatim): credit `= (Old plan amount / term days) × remaining
+> days`; charge `= (New plan amount / term days) × remaining days`; net `=
+> charge − credit`.
+
+The core is a **fraction of a billing period**, computed exactly:
+
+```go
+type Period struct { Start, End time.Time }        // half-open [Start, End)
+type Basis uint8   // ProrateBySecond (default), ProrateByDay
+
+// Fraction returns the exact fraction of p covered by [from, to), as a *big.Rat.
+func (p Period) Fraction(from, to time.Time, b Basis) (*big.Rat, error)
+
+// Prorate returns amount × fraction, rounded once to the currency's minor unit.
+func Prorate(amount int64, cur Currency, frac *big.Rat) (int64, error)
+
+// Change computes the credit, charge and net for a mid-period plan change.
+func Change(oldAmount, newAmount int64, cur Currency, p Period, at time.Time, b Basis) (Proration, error)
+type Proration struct { Credit, Charge, Net int64 }  // Credit is negative
+```
+
+The fraction is a `*big.Rat` for the same reason rates are: `remaining /
+termDays` must not drift. Rounding happens once, at the money boundary.
+
+Difficulty is in the **calendar**, not the arithmetic. The traps, each with a
+test:
+
+- **Basis.** Second-based (Stripe default) vs day-based (Chargebee option). A
+  `Period` of one month has a different denominator under each; support both,
+  default to second.
+- **Timezone / DST.** A period is anchored in a `*time.Location`. A day that is
+  23 or 25 hours long (DST transition) must not make the fraction wrong. The
+  second-based basis uses real elapsed time; the day-based basis counts
+  calendar days in the period's location. Test a period spanning a DST change in
+  both bases.
+- **Month-end anniversary.** Anniversary cycles anchored on the 31st: the next
+  period end is Feb 28/29, then back to Mar 31. Cycle-boundary computation
+  (`NextBoundary(anchor, from, unit)`) must clamp to the last valid day of the
+  target month, and must not drift the anchor permanently to the 28th. This is
+  the classic bug; test `Jan 31 → Feb 28 → Mar 31` explicitly.
+- **Anniversary vs calendar-aligned cycles.** Anniversary: period boundaries are
+  N months from a signup anchor. Calendar-aligned: boundaries are the 1st of the
+  month. Both are just different `NextBoundary` policies over the same fraction
+  math.
+- **Trial → paid.** A zero-amount period transitioning to paid is a plan change
+  from 0; the credit half is zero. Falls out of `Change` with `oldAmount=0`.
+
+`Allocate` must be **extended to signed totals** for proration credits (a credit
+splits a negative amount across lines). Phase 1 refuses a negative total; phase 2
+lifts that, preserving the exact-sum and largest-remainder properties with the
+sign carried through. This is a documented phase-1 limitation now closed.
+
+### Interaction-order composition
+
+Charges, discounts, minimum charges, prepaid credits and spend commitments must
+combine, and **the order is where real systems disagree and litigate** — does a
+percentage discount apply before or after a minimum? Are credits drawn down
+before or after usage is rated? Public vendor docs under-specify this; the one
+concrete rule found is Stripe's "proration line items are `discountable=false`."
+
+So tariff does **not** bake an order. It exposes the operations as composable
+steps the caller sequences explicitly, each producing a labeled adjustment line
+so the final invoice is fully auditable:
+
+```go
+type Invoice struct { Lines []Line; Subtotal, Total int64; Currency Currency }
+
+type Step interface{ apply(*Invoice) error }  // sealed set
+
+// Steps (each a labeled line on the invoice):
+func Charged(c Charge, quantity int64) Step   // rate a charge, add its lines
+func PercentOff(pct *big.Rat, label string) Step
+func AmountOff(minor int64, label string) Step
+func MinimumCharge(floor int64, label string) Step   // top up to floor if below
+func DrawCredit(balance *int64, label string) Step   // prepaid credit drawdown, mutates balance
+func DrawCommitment(balance *int64, label string) Step
+
+// Compose runs the steps in the given order over an empty invoice.
+func Compose(cur Currency, steps ...Step) (Invoice, error)
+```
+
+The order is the caller's, and it is *visible* — `Compose(cur, Charged(...),
+PercentOff(...), MinimumCharge(...))` discounts before the floor;
+reordering the two steps floors before discounting, and the invoice lines record
+which happened. tariff's job is that each step is individually correct and
+exactly-rounded, not to decide the sequence. Each step is a small, separately
+tested unit; the composition is just left-fold over the invoice.
+
+Scope guard: this is invoice *composition*, still not persistence, tax, or
+subscription lifecycle. An `Invoice` is a computed value, stored by no one.
+
+### Phase 2 non-goals
+
+- No tax step (data moat, unchanged).
+- No automatic order — refusing to pick one is the design.
+- No metering — quantities still arrive pre-aggregated.
