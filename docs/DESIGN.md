@@ -487,3 +487,53 @@ zero.
   every step. `Line` grew an optional `Label` (empty on rating lines) so charges
   and adjustments share one line type — a keyed-field append, backward
   compatible with phase 1.
+
+## Phase 3 as built — tariffd (REST service)
+
+Shipped: `tariffd`, a nested module (`github.com/zkrebbekx/tariff/tariffd`,
+`replace` to the root) exposing the whole library over JSON — `POST /v1/rate`,
+`/v1/proration`, `/v1/proration/fraction`, `/v1/compose`, `/v1/boundary`, plus
+`GET /healthz` and an embedded `GET /v1/openapi.yaml`. Dependency budget held:
+stdlib `net/http` (Go 1.22 pattern routing), `log/slog`, and `tariff` — nothing
+else. Because the library is a *stateless* compute core, the service is too:
+no database, no persistence, no per-caller state, and so none of chronicle's
+attribution machinery — a token is a plain admission check, not an identity.
+≥85% coverage (90.0%), clean `vet`/`gofmt -s`/`-race`/`golangci-lint`.
+
+The design decisions the wire forced, recorded for the next service:
+
+- **Exact rates survive JSON only as strings.** A rate is a `*big.Rat`; JSON has
+  no rational type and a rate like `$0.0006` as a JSON *number* is a `float64`
+  that has already lost the value. So every rate and percentage crosses the wire
+  as a **string** and is parsed with `big.Rat.SetString`, which reads decimal
+  (`"0.0006"`) and fraction (`"6/10000"`) forms exactly and equally — the two
+  parse to the identical rate, and `65000 × $0.0006 + $10` returns exactly
+  `$49.00` over HTTP. A rate sent as a JSON number fails to decode into the
+  string field, which is the intended rejection. Amounts stay `int64` minor
+  units (lossless as JSON numbers) and are echoed with a formatted display
+  string; the integer is authoritative.
+- **The error contract mirrors the sentinels.** Every response is
+  `{error, code}`; the code is the sentinel name (`bad_discount`,
+  `negative_quantity`, `bad_currency`, `empty_tiers`, …) resolved with
+  `errors.Is`. Every tariff validation sentinel — overflow included — is a 400:
+  they all describe a request the caller can fix. Only a genuinely unmapped
+  error is a 500, rendered generically so no library string leaks.
+- **Per-step effects: the one place the API resisted a clean HTTP mapping.**
+  `Compose` returns an `Invoice` (lines reconciling to `Total`), not per-step
+  deltas, and `Step` is a sealed interface, so a step's individual effect cannot
+  be recovered by applying steps one at a time outside `Compose`, nor reliably
+  by attributing invoice lines back to steps (two steps may share a label). The
+  service instead reports each effect as `Total(prefix k) − Total(prefix k−1)`,
+  recomposing growing prefixes — O(n²) but exact and unambiguous, and trivially
+  cheap for the handful of steps a real invoice carries. Since every step's
+  validation is independent of the running total, a prefix never fails when the
+  whole composition succeeded.
+- **Balances are echoed post-draw.** `DrawCredit`/`DrawCommitment` mutate a
+  `*int64` the caller owns; over JSON the caller passes the balance by value, so
+  the response returns what each balance *became* after the draw, alongside the
+  drawn amount.
+- **Auth is optional and identity-free.** A static bearer-token set
+  (`TARIFFD_TOKENS`, constant-time compared) gates `/v1` when configured; unset,
+  `/v1` is open — a compute service that stores and attributes nothing leaks
+  nothing by being open, so the guidance is a proxy in front, not a built-in
+  identity provider. `/healthz` and the OpenAPI document are always open.

@@ -176,6 +176,77 @@ Failures are typed sentinels matchable with `errors.Is`: `ErrNegativeQuantity`,
 `ErrNilStep`. A zero quantity is valid and rates to nothing; a negative one is
 an error.
 
+## Running the service
+
+`tariffd` (in [`tariffd/`](tariffd)) is `tariff` as a standalone REST service,
+for polyglot shops that cannot import the Go library. It is **stateless
+compute** — request in, computed amounts out — with no database, no persistence
+and no state. One command brings it up, no dependencies attached:
+
+```
+cd tariffd && docker compose up --build
+```
+
+Rates cross the wire as **strings**, never JSON numbers: a rate is an exact
+rational, and a float `0.0006` has already lost the value. A decimal and the
+identical fraction parse to the same rate.
+
+```bash
+# 65000 units at $0.0006 + a $10 flat fee = exactly $49.00.
+# unitRate "6/10000" gives the byte-identical result.
+curl -s localhost:8080/v1/rate -d '{
+  "model": "per_unit",
+  "currency": {"code":"USD","decimals":2,"rounding":"half_up"},
+  "unitRate": "0.0006",
+  "flatFee": 1000,
+  "quantity": 65000
+}'
+# {"total":4900,"totalFormatted":"49.00","lines":[...]}
+```
+
+Composition applies steps **in the given order**, because that order is where
+real billing systems disagree:
+
+```bash
+# charge $100 → 10% off → floor to $95  ==  $95
+curl -s localhost:8080/v1/compose -d '{
+  "currency": {"code":"USD","decimals":2,"rounding":"half_up"},
+  "steps": [
+    {"type":"charge","charge":{"model":"per_unit","currency":{"code":"USD","decimals":2,"rounding":"half_up"},"unitRate":"100"},"quantity":1},
+    {"type":"percent_off","pct":"1/10","label":"10% off"},
+    {"type":"minimum","minor":9500,"label":"minimum $95"}
+  ]
+}'
+# {"total":9500,...} — swap the last two steps and the $100 clears the floor,
+# ending at $90 instead. Same operations, different order, different total.
+```
+
+Proration returns the cross-vendor credit / charge / net (Stripe's −$5 / +$10 /
+$5 net upgrade at the midpoint of a period):
+
+```bash
+curl -s localhost:8080/v1/proration -d '{
+  "oldAmount": 1000, "newAmount": 2000,
+  "currency": {"code":"USD","decimals":2,"rounding":"half_up"},
+  "period": {"start":"2026-01-01T00:00:00Z","end":"2026-01-03T00:00:00Z"},
+  "at": "2026-01-02T00:00:00Z", "basis": "second"
+}'
+# {"credit":-500,"charge":1000,"net":500,...}
+```
+
+The endpoints are `/v1/rate`, `/v1/proration`, `/v1/proration/fraction`,
+`/v1/compose` and `/v1/boundary`; the full contract is the embedded
+`GET /v1/openapi.yaml`, and `GET /healthz` is liveness.
+
+**Scope and auth.** tariffd is stateless compute, not a data store.
+Authentication is **optional**: set `TARIFFD_TOKENS` (comma-separated) to
+require `Authorization: Bearer <token>` on `/v1`; leave it unset and `/v1` is
+open — an open compute service leaks no data, it only offers free computation.
+`/healthz` and the OpenAPI document are always open. Put a reverse proxy (TLS,
+rate limiting) in front for any real deployment. Configuration is
+environment-only (`TARIFFD_ADDR`, `TARIFFD_TOKENS`, the HTTP timeouts), and the
+service never logs request bodies — they carry your price plans.
+
 ## Non-goals
 
 - **No metering.** Deduplication, idempotency, late events, aggregation — that
