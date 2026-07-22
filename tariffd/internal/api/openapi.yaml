@@ -1,0 +1,430 @@
+# tariffd — hand-written OpenAPI description. Maintained alongside the handlers;
+# a test fails if a routed path is missing here. No codegen.
+openapi: 3.0.3
+info:
+  title: tariffd
+  description: |
+    The tariff rating core as a standalone REST service, for deployments that
+    cannot import the Go library.
+
+    tariffd is STATELESS compute. It stores nothing, meters nothing, and
+    attributes nothing: every request is a pure function of its body. There is
+    no database, no persistence, and no per-caller state.
+
+    The one thing HTTP would erode is exactness. tariff prices in exact
+    rationals (math/big.Rat), so a per-unit rate of $0.0006 is exactly 6/10000,
+    never a drifting float. JSON has no rational type, so **every rate and
+    percentage crosses the wire as a STRING** and is parsed exactly with
+    big.Rat.SetString, which reads decimal ("0.0006", "6.5") and fraction
+    ("6/10000", "13/2") forms equally — "0.0006" and "6/10000" are the same
+    rate. A rate sent as a JSON number is rejected. Amounts are int64 counts of
+    the currency's minor unit (cents for USD, whole yen for JPY, fils for KWD)
+    and are the authoritative value; each is also echoed as a formatted display
+    string ("41.50"), which is never authoritative.
+
+    Authentication is optional. If TARIFFD_TOKENS is configured, every /v1
+    endpoint requires `Authorization: Bearer <token>`; otherwise /v1 is open —
+    a compute service leaks no data by being open, so front it with a proxy for
+    anything public. /healthz and this document are always open.
+
+    Errors are always `{"error": string, "code": string}`. The code mirrors
+    tariff's sentinel taxonomy (bad_discount, negative_quantity, bad_currency,
+    empty_tiers, tier_order, no_rate, bad_package, overflow, bad_period,
+    bad_window, bad_basis, bad_floor, bad_balance, currency_mismatch, nil_step,
+    bad_allowance, negative_amount, unknown_model, bad_allocation) plus the
+    handler codes invalid_body, invalid_argument, body_too_large, unauthorized,
+    not_found, method_not_allowed, internal. Switch on the code, never on the
+    message.
+  version: "0.1.0"
+  license:
+    name: MIT
+servers:
+  - url: /
+security:
+  - bearer: []
+  - {}
+tags:
+  - name: rating
+    description: Turn a usage quantity into money.
+  - name: proration
+    description: Mid-period plan changes and billing-period calendar.
+  - name: composition
+    description: Order-sensitive invoice composition.
+  - name: meta
+    description: Liveness and self-description.
+
+paths:
+  /healthz:
+    get:
+      tags: [meta]
+      summary: Liveness probe (always open)
+      security: []
+      responses:
+        "200":
+          description: The process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /v1/openapi.yaml:
+    get:
+      tags: [meta]
+      summary: This document (always open)
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI description.
+          content:
+            application/yaml:
+              schema: { type: string }
+
+  /v1/rate:
+    post:
+      tags: [rating]
+      summary: Rate a usage quantity against a charge
+      description: |
+        Maps to tariff.Charge.Rate. The body is a charge spec plus a quantity.
+        Which spec fields matter depends on the model: per_unit reads unitRate;
+        graduated and volume read the tiers' unitRate; stairstep reads the
+        tiers' flatRate; package reads packageSize and packagePrice. A
+        freeAllowance and a flatFee compose with every model.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ChargeSpec"
+                - type: object
+                  properties:
+                    quantity:
+                      type: integer
+                      format: int64
+                      description: Usage quantity to rate. Zero is valid and rates to nothing (a flat fee still applies); negative is negative_quantity.
+            examples:
+              gradutated-flat:
+                summary: $49 = 65000 × $0.0006 + $10 flat, exact
+                value:
+                  model: per_unit
+                  currency: { code: USD, decimals: 2, rounding: half_up }
+                  unitRate: "0.0006"
+                  flatFee: 1000
+                  quantity: 65000
+      responses:
+        "200":
+          description: The rated charge.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RateResponse" }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /v1/proration:
+    post:
+      tags: [proration]
+      summary: Prorate a mid-period plan change
+      description: |
+        Maps to tariff.Change. Returns the credit for the unused old price
+        (≤ 0), the charge for the remaining time on the new price (≥ 0), and
+        their net. oldAmount = 0 is a trial-to-paid change with a zero credit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProrationRequest" }
+            examples:
+              stripe:
+                summary: $10 → $20 upgrade at the midpoint
+                value:
+                  oldAmount: 1000
+                  newAmount: 2000
+                  currency: { code: USD, decimals: 2, rounding: half_up }
+                  period: { start: "2026-01-01T00:00:00Z", end: "2026-01-03T00:00:00Z" }
+                  at: "2026-01-02T00:00:00Z"
+                  basis: second
+      responses:
+        "200":
+          description: The proration.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProrationResponse" }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /v1/proration/fraction:
+    post:
+      tags: [proration]
+      summary: Exact fraction of a period covered by a window
+      description: |
+        Maps to Period.Fraction. Returns the exact fraction as a canonical
+        "num/den" string (or a bare integer for a whole fraction) plus an
+        approximate decimal for display. The string is authoritative; the
+        decimal is lossy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FractionRequest" }
+      responses:
+        "200":
+          description: The fraction.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FractionResponse" }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /v1/compose:
+    post:
+      tags: [composition]
+      summary: Compose an invoice from ordered steps
+      description: |
+        Maps to tariff.Compose. Folds the steps left to right IN THE GIVEN
+        ORDER over an empty invoice — the order is the point, since a discount
+        before or after a minimum yields different totals. Returns the invoice
+        (lines, subtotal, total), each step's effect on the running total, and
+        the post-draw balance for credit and commitment steps (which were passed
+        by value in the request).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ComposeRequest" }
+            examples:
+              order-matters:
+                summary: charge → 10% off → min $95 = $95 (reorder the last two to get $90)
+                value:
+                  currency: { code: USD, decimals: 2, rounding: half_up }
+                  steps:
+                    - type: charge
+                      charge: { model: per_unit, currency: { code: USD, decimals: 2, rounding: half_up }, unitRate: "100" }
+                      quantity: 1
+                    - type: percent_off
+                      pct: "1/10"
+                      label: "10% off"
+                    - type: minimum
+                      minor: 9500
+                      label: "minimum $95"
+      responses:
+        "200":
+          description: The composed invoice.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComposeResponse" }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /v1/boundary:
+    post:
+      tags: [proration]
+      summary: Next billing-cycle boundary
+      description: |
+        Maps to NextBoundary (anniversary, calendar:false) or
+        NextCalendarBoundary (calendar-aligned, calendar:true). Returns the
+        first boundary strictly after `from`. The month-end rule is drift-free:
+        a Jan 31 anchor steps to Feb 28/29 and back to Mar 31.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BoundaryRequest" }
+            examples:
+              month-end:
+                summary: Jan 31 anchor → Feb 28
+                value:
+                  anchor: "2026-01-31T00:00:00Z"
+                  from: "2026-01-31T00:00:00Z"
+                  unit: monthly
+                  calendar: false
+      responses:
+        "200":
+          description: The next boundary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  next: { type: string, format: date-time }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: Optional. Required only when TARIFFD_TOKENS is configured.
+  responses:
+    Error:
+      description: The JSON error contract.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      required: [error, code]
+      properties:
+        error: { type: string, description: Human-readable message; do not switch on it. }
+        code: { type: string, description: Stable code mirroring tariff's sentinels plus handler codes. }
+    Currency:
+      type: object
+      description: The money unit a charge is priced in. Rounding must be chosen explicitly.
+      required: [decimals, rounding]
+      properties:
+        code: { type: string, description: 'Informational label, e.g. USD. Does not affect arithmetic.' }
+        decimals: { type: integer, description: "Minor-unit decimal places: 2 for USD, 0 for JPY, 3 for KWD." }
+        rounding:
+          type: string
+          enum: [half_up, half_even, floor, ceil]
+          description: How an exact amount rounds to a whole minor unit. No default — an unset mode is bad_currency.
+    Tier:
+      type: object
+      description: One band of a tiered schedule; bands are half-open on the low side.
+      properties:
+        upTo: { type: integer, format: int64, description: Inclusive upper bound of the band; ignored when last is true. }
+        last: { type: boolean, description: 'Marks the final, unbounded band. Exactly one tier must set it.' }
+        unitRate: { type: string, description: 'Exact per-unit rate as a decimal or fraction string (graduated, volume).' }
+        flatRate: { type: integer, format: int64, description: Flat fee in minor units for landing in the band (stairstep). }
+    ChargeSpec:
+      type: object
+      required: [model, currency]
+      properties:
+        model:
+          type: string
+          enum: [per_unit, graduated, volume, package, stairstep]
+        currency: { $ref: "#/components/schemas/Currency" }
+        tiers:
+          type: array
+          items: { $ref: "#/components/schemas/Tier" }
+        unitRate: { type: string, description: Exact per-unit rate string for the per_unit model. }
+        packageSize: { type: integer, format: int64, description: Block size for the package model; must be positive. }
+        packagePrice: { type: integer, format: int64, description: Price per block in minor units (package model). }
+        freeAllowance: { type: integer, format: int64, description: Quantity subtracted before rating (or before the package ceil). }
+        flatFee: { type: integer, format: int64, description: 'Fixed amount in minor units, added as its own line, applied even at zero usage.' }
+    Line:
+      type: object
+      properties:
+        quantity: { type: integer, format: int64 }
+        rate: { type: string, description: 'Exact per-unit rate applied, canonical rational string; omitted where the model has none.' }
+        subtotal: { type: integer, format: int64, description: Authoritative amount in minor units. }
+        subtotalFormatted: { type: string }
+        label: { type: string, description: Present only on composed adjustment lines. }
+    RateResponse:
+      type: object
+      properties:
+        total: { type: integer, format: int64 }
+        totalFormatted: { type: string }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/Line" }
+    Period:
+      type: object
+      required: [start, end]
+      properties:
+        start: { type: string, format: date-time, description: Inclusive lower bound; the period's location. }
+        end: { type: string, format: date-time, description: Exclusive upper bound; must be after start. }
+    ProrationRequest:
+      type: object
+      required: [oldAmount, newAmount, currency, period, at]
+      properties:
+        oldAmount: { type: integer, format: int64, description: Old plan price in minor units; must be non-negative. }
+        newAmount: { type: integer, format: int64, description: New plan price in minor units; must be non-negative. }
+        currency: { $ref: "#/components/schemas/Currency" }
+        period: { $ref: "#/components/schemas/Period" }
+        at: { type: string, format: date-time, description: Instant of the change. }
+        basis:
+          type: string
+          enum: [second, day]
+          description: Elapsed-time measure. Defaults to second (the Stripe default).
+    ProrationResponse:
+      type: object
+      properties:
+        credit: { type: integer, format: int64, description: Credit for the unused old price (≤ 0). }
+        creditFormatted: { type: string }
+        charge: { type: integer, format: int64, description: Charge for the remaining new price (≥ 0). }
+        chargeFormatted: { type: string }
+        net: { type: integer, format: int64 }
+        netFormatted: { type: string }
+    FractionRequest:
+      type: object
+      required: [period, from, to]
+      properties:
+        period: { $ref: "#/components/schemas/Period" }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        basis:
+          type: string
+          enum: [second, day]
+    FractionResponse:
+      type: object
+      properties:
+        fraction: { type: string, description: Exact fraction as "num/den" or a bare integer. Authoritative. }
+        fractionDecimal: { type: number, description: Approximate decimal for display. Lossy. }
+    BoundaryRequest:
+      type: object
+      required: [from]
+      properties:
+        anchor: { type: string, format: date-time, description: Anniversary-cycle anchor. Required unless calendar is true. }
+        from: { type: string, format: date-time, description: Instant to step strictly after. }
+        unit:
+          type: string
+          enum: [monthly, yearly]
+          description: Cycle step. Defaults to monthly.
+        calendar: { type: boolean, description: 'If true, calendar-aligned (anchored on the 1st) and anchor is ignored.' }
+    ComposeStep:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [charge, percent_off, amount_off, minimum, credit, commitment]
+        charge: { $ref: "#/components/schemas/ChargeSpec" }
+        quantity: { type: integer, format: int64, description: For a charge step. }
+        pct: { type: string, description: 'For percent_off — a fraction string in [0,1], e.g. "1/10" or "0.1" for 10%.' }
+        minor: { type: integer, format: int64, description: 'For amount_off (amount off) and minimum (the floor), in minor units.' }
+        balance: { type: integer, format: int64, description: 'For credit and commitment — the balance in minor units, passed by value.' }
+        label: { type: string }
+    ComposeRequest:
+      type: object
+      required: [currency, steps]
+      properties:
+        currency: { $ref: "#/components/schemas/Currency" }
+        steps:
+          type: array
+          items: { $ref: "#/components/schemas/ComposeStep" }
+    ComposeStepEffect:
+      type: object
+      properties:
+        type: { type: string }
+        label: { type: string }
+        effect: { type: integer, format: int64, description: Amount this step moved the running total by. }
+        effectFormatted: { type: string }
+        balance: { type: integer, format: int64, description: Post-draw balance; present only for credit and commitment steps. }
+        balanceFormatted: { type: string }
+    ComposeResponse:
+      type: object
+      properties:
+        subtotal: { type: integer, format: int64, description: 'Gross of the charge lines, before adjustments.' }
+        subtotalFormatted: { type: string }
+        total: { type: integer, format: int64, description: Net after every step. }
+        totalFormatted: { type: string }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/Line" }
+        steps:
+          type: array
+          items: { $ref: "#/components/schemas/ComposeStepEffect" }

@@ -1,0 +1,23 @@
+# One-command demo: just the tariffd service. There is no database — tariff is
+# a stateless compute library, so tariffd stores nothing and needs nothing.
+#
+#   cd tariffd && docker compose up --build
+#
+# Then talk to http://localhost:8080. With no TARIFFD_TOKENS set below, the /v1
+# endpoints are OPEN (a compute service leaks no data by being open); uncomment
+# the tokens line to require a bearer token, and put a proxy in front for any
+# real deployment.
+services:
+  tariffd:
+    build:
+      # The repository root: the tariffd module needs the tariff root via a
+      # replace directive.
+      context: ..
+      dockerfile: tariffd/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      TARIFFD_ADDR: ":8080"
+      TARIFFD_LOG_LEVEL: "info"
+      # Uncomment to require a bearer token (comma-separated for several):
+      # TARIFFD_TOKENS: "demo-token"
