@@ -24,6 +24,19 @@ type Invoice struct {
 	// Total is the net amount after every step, in minor units. It equals the
 	// sum of all line subtotals.
 	Total int64
+
+	// draws holds the caller-balance decrements a successful compose will apply.
+	// A draw step records its mutation here rather than performing it, so a
+	// Compose that later errors — and returns this invoice discarded — leaves
+	// every caller balance untouched. Committed and cleared by Compose only
+	// after the whole fold succeeds.
+	draws []pendingDraw
+}
+
+// pendingDraw is a deferred decrement of a caller-owned balance.
+type pendingDraw struct {
+	balance *int64
+	amount  int64
 }
 
 // Step is one operation in an invoice composition: a charge, a discount, a
@@ -55,9 +68,17 @@ func Compose(cur Currency, steps ...Step) (Invoice, error) {
 			return Invoice{}, fmt.Errorf("%w: step %d", ErrNilStep, i)
 		}
 		if err := s.apply(&inv); err != nil {
+			// Nothing is committed: the draws recorded so far are never applied,
+			// so a failed compose leaves every caller balance as it found it.
 			return Invoice{}, err
 		}
 	}
+	// The whole fold succeeded — now, and only now, decrement the caller
+	// balances the draw steps recorded, then drop the record from the result.
+	for _, d := range inv.draws {
+		*d.balance -= d.amount
+	}
+	inv.draws = nil
 	return inv, nil
 }
 
@@ -127,6 +148,13 @@ func (s percentOffStep) apply(inv *Invoice) error {
 	}
 	if s.pct.Sign() < 0 || s.pct.Cmp(big.NewRat(1, 1)) > 0 {
 		return fmt.Errorf("%w: percentage %s not in [0, 1]", ErrBadDiscount, s.pct.RatString())
+	}
+	// A percentage of a zero-or-negative running total is not a discount: scaling
+	// a negative total by a positive fraction would append a positive line — a
+	// surcharge wearing a discount's label. There is nothing to take off, so
+	// no-op, matching how a credit draw skips a non-positive total.
+	if inv.Total <= 0 {
+		return nil
 	}
 	// Exact fraction of the running total, rounded once via the currency.
 	exact := new(big.Rat).SetInt64(inv.Total)
@@ -225,7 +253,18 @@ func (s drawStep) apply(inv *Invoice) error {
 	if *s.balance < 0 {
 		return fmt.Errorf("%w: negative %s balance %d", ErrBadBalance, s.kind, *s.balance)
 	}
-	draw := *s.balance
+	// The available balance is the caller's current value less any draws already
+	// pending against the SAME pointer in this compose — because those draws are
+	// deferred until Compose commits, the raw pointer still reads its original
+	// value, so two draws on one balance must net against each other here or the
+	// second would over-draw.
+	avail := *s.balance
+	for _, d := range inv.draws {
+		if d.balance == s.balance {
+			avail -= d.amount
+		}
+	}
+	draw := avail
 	if inv.Total < draw {
 		draw = inv.Total
 	}
@@ -235,7 +274,10 @@ func (s drawStep) apply(inv *Invoice) error {
 	if err := inv.addLine(Line{Label: s.label, Subtotal: -draw}); err != nil {
 		return err
 	}
-	*s.balance -= draw
+	// Record the balance decrement rather than performing it: Compose commits
+	// it only if every remaining step also succeeds, so a later error cannot
+	// leave the caller's balance drawn against a discarded invoice.
+	inv.draws = append(inv.draws, pendingDraw{balance: s.balance, amount: draw})
 	return nil
 }
 

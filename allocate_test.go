@@ -48,7 +48,7 @@ func sumInt64(xs []int64) int64 {
 func TestAllocate(t *testing.T) {
 	t.Run("Given a total that does not divide evenly", func(t *testing.T) {
 		t.Run("When split across equal ratios", func(t *testing.T) {
-			t.Run("Then the leftover goes round-robin from the first part", func(t *testing.T) {
+			t.Run("Then equal largest remainders break ties by position, leftover to the first", func(t *testing.T) {
 				got, err := Allocate(100, []int64{1, 1, 1})
 				if err != nil {
 					t.Fatal(err)

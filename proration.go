@@ -160,7 +160,15 @@ type Proration struct {
 // rounded once, and Net is their sum. A trial-to-paid change falls out with
 // oldAmount = 0, giving a zero credit. Errors from the period, window or
 // currency propagate.
+//
+// Both amounts must be non-negative — a plan price is not a debt — otherwise
+// [ErrNegativeAmount] is returned. Given that, Credit is always ≤ 0 and Charge
+// always ≥ 0; a downgrade (newAmount < oldAmount) yields a negative Net, a
+// legitimate refund.
 func Change(oldAmount, newAmount int64, cur Currency, p Period, at time.Time, b Basis) (Proration, error) {
+	if oldAmount < 0 || newAmount < 0 {
+		return Proration{}, fmt.Errorf("%w: old %d, new %d", ErrNegativeAmount, oldAmount, newAmount)
+	}
 	remaining, err := p.Fraction(at, p.End, b)
 	if err != nil {
 		return Proration{}, err

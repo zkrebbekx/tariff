@@ -576,3 +576,91 @@ func TestCycleUnitBasisStrings(t *testing.T) {
 		})
 	})
 }
+
+// TestChangeRejectsNegativeAmounts pins that Change refuses a negative plan
+// amount rather than silently inverting the Credit≤0 / Charge≥0 invariant.
+func TestChangeRejectsNegativeAmounts(t *testing.T) {
+	usd := USD(RoundHalfUp)
+	p := Period{Start: utc(2027, time.Month(6), 1, 0, 0), End: utc(2027, time.Month(7), 1, 0, 0)}
+	at := utc(2027, time.Month(6), 16, 0, 0)
+	t.Run("Given a change with a negative amount", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			old, new int64
+		}{
+			{"negative old", -1000, 2000},
+			{"negative new", 1000, -2000},
+		} {
+			t.Run("When "+tc.name, func(t *testing.T) {
+				t.Run("Then it returns ErrNegativeAmount", func(t *testing.T) {
+					if _, err := Change(tc.old, tc.new, usd, p, at, ProrateByDay); !errors.Is(err, ErrNegativeAmount) {
+						t.Fatalf("err = %v, want ErrNegativeAmount", err)
+					}
+				})
+			})
+		}
+	})
+	t.Run("Given a legitimate downgrade", func(t *testing.T) {
+		t.Run("When new < old, both non-negative", func(t *testing.T) {
+			got, err := Change(2000, 1000, usd, p, at, ProrateByDay)
+			t.Run("Then Net is a negative refund with Credit≤0 and Charge≥0", func(t *testing.T) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Credit > 0 || got.Charge < 0 || got.Net >= 0 {
+					t.Fatalf("downgrade = %+v, want Credit≤0, Charge≥0, Net<0", got)
+				}
+			})
+		})
+	})
+}
+
+// TestFractionPartitions pins the load-bearing invariant the design states but
+// no test asserted directly: for any instant in the period, the day basis has
+// used(Start,at) + remaining(at,End) == 1 exactly — including across a DST day.
+func TestFractionPartitions(t *testing.T) {
+	t.Run("Given a period and many split points", func(t *testing.T) {
+		p := Period{Start: utc(2027, time.Month(3), 1, 0, 0), End: utc(2027, time.Month(4), 1, 0, 0)}
+		for day := 1; day <= 31; day++ {
+			at := utc(2027, time.March, day, 0, 0)
+			used, err := p.Fraction(p.Start, at, ProrateByDay)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rem, err := p.Fraction(at, p.End, ProrateByDay)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sum := new(big.Rat).Add(used, rem)
+			if sum.Cmp(big.NewRat(1, 1)) != 0 {
+				t.Fatalf("day %d: used %s + remaining %s = %s, want exactly 1", day, used.RatString(), rem.RatString(), sum.RatString())
+			}
+		}
+	})
+
+	t.Run("Given a period spanning a DST spring-forward day", func(t *testing.T) {
+		ny, err := time.LoadLocation("America/New_York")
+		if err != nil {
+			t.Skip("tzdata unavailable")
+		}
+		// March 2027: spring-forward is Mar 14 (a 23-hour civil day).
+		p := Period{
+			Start: time.Date(2027, 3, 1, 0, 0, 0, 0, ny),
+			End:   time.Date(2027, 4, 1, 0, 0, 0, 0, ny),
+		}
+		for h := 0; h < 31*24; h += 5 {
+			at := p.Start.Add(time.Duration(h) * time.Hour)
+			used, err := p.Fraction(p.Start, at, ProrateByDay)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rem, err := p.Fraction(at, p.End, ProrateByDay)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if new(big.Rat).Add(used, rem).Cmp(big.NewRat(1, 1)) != 0 {
+				t.Fatalf("at %s: day-basis used+remaining ≠ 1 across DST", at)
+			}
+		}
+	})
+}

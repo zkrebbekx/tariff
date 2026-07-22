@@ -531,3 +531,116 @@ func TestComposeOverflow(t *testing.T) {
 		})
 	})
 }
+
+// TestComposeAtomicBalances pins that a Compose that errors after a draw leaves
+// the caller's balance untouched — the draw is committed only if the whole
+// composition succeeds. Regression for the non-atomic in-place mutation.
+func TestComposeAtomicBalances(t *testing.T) {
+	usd := USD(RoundHalfUp)
+	charge := dollarsCharge(usd, 100)
+
+	t.Run("Given a draw followed by a step that errors", func(t *testing.T) {
+		cases := []struct {
+			name string
+			bad  Step
+		}{
+			{"a bad discount (10x, not 10%)", PercentOff(big.NewRat(10, 1), "oops")},
+			{"a negative amount off", AmountOff(-1, "bad")},
+		}
+		for _, tc := range cases {
+			t.Run("When the failing step is "+tc.name, func(t *testing.T) {
+				bal := int64(3000)
+				_, err := Compose(usd, Charged(charge, 1), DrawCredit(&bal, "credit"), tc.bad)
+				t.Run("Then Compose errors and the balance is unchanged", func(t *testing.T) {
+					if err == nil {
+						t.Fatal("expected an error")
+					}
+					if bal != 3000 {
+						t.Fatalf("balance = %d after failed compose, want 3000 unchanged", bal)
+					}
+				})
+			})
+		}
+	})
+
+	t.Run("Given a second draw whose balance is invalid", func(t *testing.T) {
+		good := int64(3000)
+		bad := int64(-1)
+		_, err := Compose(usd, Charged(charge, 1), DrawCredit(&good, "good"), DrawCredit(&bad, "bad"))
+		t.Run("Then the first, valid balance is not drawn down", func(t *testing.T) {
+			if !errors.Is(err, ErrBadBalance) {
+				t.Fatalf("err = %v, want ErrBadBalance", err)
+			}
+			if good != 3000 {
+				t.Fatalf("good balance = %d, want 3000 unchanged", good)
+			}
+		})
+	})
+
+	t.Run("Given a successful compose", func(t *testing.T) {
+		bal := int64(3000)
+		inv, err := Compose(usd, Charged(charge, 1), DrawCredit(&bal, "credit"))
+		t.Run("Then the balance is committed exactly once", func(t *testing.T) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bal != 0 {
+				t.Fatalf("balance = %d, want 0 ($30 balance fully drawn against the $100 total)", bal)
+			}
+			if inv.Total != 7000 {
+				t.Fatalf("total = %d, want 7000 ($100 - $30 credit)", inv.Total)
+			}
+		})
+	})
+
+	t.Run("Given two draws against the SAME balance in one compose", func(t *testing.T) {
+		// The deferred draws must net against each other, or the second reads the
+		// un-decremented balance and over-draws it negative.
+		bal := int64(50)
+		inv, err := Compose(usd,
+			Charged(dollarsCharge(usd, 200), 1), // $200
+			DrawCredit(&bal, "first"),
+			DrawCredit(&bal, "second"),
+		)
+		t.Run("Then the balance is drawn once, never negative", func(t *testing.T) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bal != 0 {
+				t.Fatalf("balance = %d, want 0 — a $50 balance drawn twice must not go negative", bal)
+			}
+			if inv.Total != 19950 {
+				t.Fatalf("total = %d, want 19950 ($200 - $0.50 balance)", inv.Total)
+			}
+		})
+	})
+}
+
+// TestPercentOffNonPositiveTotal pins that a percentage discount on a
+// zero-or-negative running total is a no-op, never a surcharge line.
+func TestPercentOffNonPositiveTotal(t *testing.T) {
+	usd := USD(RoundHalfUp)
+	t.Run("Given a running total driven negative before a percentage discount", func(t *testing.T) {
+		inv, err := Compose(usd,
+			dollarsChargeStep(usd, 100),    // +$100
+			AmountOff(30000, "big coupon"), // -$300 -> -$200
+			PercentOff(big.NewRat(1, 10), "10% off"),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Run("Then the discount does not add a positive surcharge line", func(t *testing.T) {
+			if inv.Total != -20000 {
+				t.Fatalf("total = %d, want -20000 — the 10%% step must not move a negative total", inv.Total)
+			}
+			last := inv.Lines[len(inv.Lines)-1]
+			if last.Label == "10% off" {
+				t.Fatalf("a no-op percent-off still appended a line: %+v", last)
+			}
+		})
+	})
+}
+
+func dollarsChargeStep(cur Currency, dollars int64) Step {
+	return Charged(dollarsCharge(cur, dollars), 1)
+}

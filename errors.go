@@ -9,6 +9,12 @@ var (
 	// negative. A zero quantity is valid and rates to nothing.
 	ErrNegativeQuantity = errors.New("tariff: negative quantity")
 
+	// ErrNegativeAmount is returned by [Change] when a plan amount is negative.
+	// Proration's Credit-is-negative / Charge-is-positive result only holds for
+	// non-negative plan prices; a negative price is rejected rather than
+	// silently inverting those signs.
+	ErrNegativeAmount = errors.New("tariff: negative amount")
+
 	// ErrEmptyTiers is returned when a tiered model (graduated, volume,
 	// stairstep) is rated with no tiers at all.
 	ErrEmptyTiers = errors.New("tariff: no tiers")
