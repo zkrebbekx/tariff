@@ -31,13 +31,19 @@ func reconciles(t *testing.T, inv Invoice) {
 	}
 }
 
-// runStep applies a single step to an invoice at a given starting total.
+// runStep applies a single step to an invoice at a given starting total, then
+// commits any deferred balance draws — mirroring what Compose does after a
+// successful fold, so a draw step's balance mutation is observable here.
 func runStep(t *testing.T, cur Currency, startTotal int64, s Step) Invoice {
 	t.Helper()
 	inv := Invoice{Currency: cur, Total: startTotal}
 	if err := s.apply(&inv); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
+	for _, d := range inv.draws {
+		*d.balance -= d.amount
+	}
+	inv.draws = nil
 	return inv
 }
 
