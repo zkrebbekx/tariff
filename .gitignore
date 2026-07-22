@@ -5,3 +5,10 @@
 bin/
 coverage.txt
 /examples/examples
+
+# The playground page is HTML but must be tracked despite the *.html rule.
+!web/index.html
+
+# Playground build artifacts — produced by the pages workflow, not committed.
+/web/tariff.wasm
+/web/wasm_exec.js

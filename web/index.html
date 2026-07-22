@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tariff — usage-billing rating playground</title>
+    <meta
+      name="description"
+      content="An in-browser, zero-backend playground for tariff: see graduated vs volume tiering side by side, drag composition steps to watch order flip the total, and prorate a mid-cycle change — all computed by the pure Go rating core compiled to WebAssembly."
+    />
+    <link rel="stylesheet" href="style.css" />
+    <!-- The Go WebAssembly runtime shim. Relative path so the site works at /tariff/. -->
+    <script src="wasm_exec.js"></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <h1>tariff</h1>
+        <p class="tagline">usage-billing rating — a clickable playground</p>
+        <nav class="links">
+          <a href="https://github.com/zkrebbekx/tariff" rel="noopener">Repo</a>
+          <a href="https://github.com/zkrebbekx/tariff/blob/main/docs/DESIGN.md" rel="noopener">Design</a>
+          <a href="https://pkg.go.dev/github.com/zkrebbekx/tariff" rel="noopener">API docs</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="intro">
+        <p>
+          <strong>tariff</strong> turns a usage quantity into money. A
+          <em>per-unit</em> plan charges one rate for every unit; a <em>tiered</em>
+          schedule splits the quantity into bands — <em>graduated</em> charges
+          each band at its own rate and sums them, while <em>volume</em> charges
+          the <em>whole</em> quantity at the single rate of the band it lands in;
+          a <em>package</em> plan rounds up to whole blocks. Rates are exact
+          rationals, amounts are integer <em>minor units</em> (cents), and
+          rounding is always the caller's explicit choice.
+        </p>
+        <p class="teaching-note">
+          Everything below runs in your tab over the pure library compiled to
+          WebAssembly — no backend, no network. Rates cross in as exact strings
+          (<code>"0.0006"</code> or <code>"6/10000"</code>); amounts come back as
+          <code>int64</code> minor units plus a formatted string. Reload to reset.
+          Built from <a href="https://github.com/zkrebbekx/tariff" rel="noopener">zkrebbekx/tariff</a>.
+        </p>
+      </section>
+
+      <section class="scenarios" aria-label="Scenarios">
+        <span class="scenarios-label">Start with a story:</span>
+        <div id="scenario-buttons" class="scenario-buttons"></div>
+      </section>
+      <p id="scenario-note" class="scenario-note" hidden></p>
+
+      <!-- ============ FLAGSHIP 1: graduated vs volume ============ -->
+      <section class="panel" id="panel-graduated" aria-label="Graduated vs volume">
+        <h2>Graduated vs volume — the same schedule, two totals</h2>
+        <p class="panel-sub">
+          Set a tiered price schedule and a quantity, and see both interpretations
+          at once. <strong>Graduated</strong> charges each tier's units at that
+          tier's rate and sums them. <strong>Volume</strong> charges the whole
+          quantity at the single rate of the tier it lands in — so as usage grows
+          into a cheaper tier, the volume total can <em>fall</em>. Tiers are
+          half-open: tier <code>i</code> covers <code>(prevUpTo, upTo]</code>.
+        </p>
+        <div class="flag-body">
+          <div class="flag-controls">
+            <p class="mini-label">Price schedule (rate per unit)</p>
+            <div id="tier-editor"></div>
+            <div class="slider">
+              <div class="slider-head">
+                <span>Quantity</span><b id="grad-qty-read">6</b>
+              </div>
+              <input id="grad-qty" type="range" min="0" max="15" value="6" />
+            </div>
+            <div class="seg-row" style="margin-top:10px;">
+              <button id="grad-preset-stripe" class="btn ghost small" type="button">Stripe schedule</button>
+              <button id="grad-preset-steep" class="btn ghost small" type="button">Steep drop</button>
+            </div>
+            <div class="totals-pair">
+              <div class="total-card grad">
+                <div class="label">Graduated</div>
+                <div class="amount" id="grad-total">—</div>
+                <div class="sub" id="grad-breakdown"></div>
+              </div>
+              <div class="total-card vol">
+                <div class="label">Volume</div>
+                <div class="amount" id="vol-total">—</div>
+                <div class="sub" id="vol-breakdown"></div>
+              </div>
+            </div>
+          </div>
+          <div class="flag-visual">
+            <div class="chart-wrap"><svg id="bars-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 210" role="img" aria-label="Graduated and volume charge breakdown"></svg></div>
+            <p class="chart-cap">Each graduated segment is one tier's units at its own rate; the volume bar is the whole quantity at one landed rate.</p>
+            <div class="chart-wrap"><svg id="line-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 220" role="img" aria-label="Total versus quantity for both models"></svg></div>
+            <p class="chart-cap">Total vs quantity across the whole range. Watch the volume line step <em>down</em> at a tier crossing under the steep-drop schedule.</p>
+          </div>
+        </div>
+        <p id="grad-err" class="err-banner" hidden></p>
+      </section>
+
+      <!-- ============ FLAGSHIP 2: order matters (composition) ============ -->
+      <section class="panel" id="panel-compose" aria-label="Order matters">
+        <h2>Order matters — drag to reorder the invoice</h2>
+        <p class="panel-sub">
+          Charges, discounts, minimums and credits combine in <em>your</em> order,
+          because that order is where real systems disagree. <strong>Drag the
+          steps</strong> to reorder them and watch the running total after each
+          step, and the final invoice, change. The classic case:
+          <code>[charge $100, 10% off, min $95]</code> lands at <b>$95</b>, but
+          moving the minimum above the discount gives <b>$90</b>. The invoice
+          lines always reconcile to the total.
+        </p>
+        <div class="two-col">
+          <div>
+            <div id="steps-list" class="steps-list"></div>
+            <div class="add-step">
+              <select id="add-step-type">
+                <option value="charge">Charge ($)</option>
+                <option value="percent_off">% off</option>
+                <option value="amount_off">Amount off ($)</option>
+                <option value="minimum">Minimum ($)</option>
+                <option value="credit">Draw credit ($)</option>
+              </select>
+              <button id="add-step-btn" class="btn small" type="button">+ Add step</button>
+            </div>
+          </div>
+          <div>
+            <div class="invoice">
+              <h3>Invoice</h3>
+              <table class="lines">
+                <thead>
+                  <tr><th>Line</th><th style="text-align:right">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr>
+                </thead>
+                <tbody id="invoice-lines"></tbody>
+              </table>
+              <p id="reconcile" class="reconcile"></p>
+            </div>
+          </div>
+        </div>
+        <p id="compose-err" class="err-banner" hidden></p>
+      </section>
+
+      <div class="two-col">
+        <!-- ============ package / stairstep ============ -->
+        <section class="panel" id="panel-package" aria-label="Package and stairstep">
+          <h2>Package &amp; stairstep</h2>
+          <p class="panel-sub">
+            <strong>Package</strong> rounds the chargeable quantity <em>up</em> to
+            whole blocks after the free allowance:
+            <code>blocks = ceil((qty − free) / N)</code>.
+            <strong>Stairstep</strong> charges one flat fee for landing in a tier.
+          </p>
+          <div class="seg" role="group" aria-label="Model" style="margin-bottom:12px;">
+            <button id="pk-mode-package" class="active" type="button">Package</button>
+            <button id="pk-mode-stairstep" type="button">Stairstep</button>
+          </div>
+
+          <div id="pk-package-fields">
+            <div class="grid2">
+              <label class="field"><span>Block size (N)</span><input id="pk-size" type="number" min="1" value="100" /></label>
+              <label class="field"><span>Price per block ($)</span><input id="pk-price" type="number" min="0" step="0.01" value="5" /></label>
+            </div>
+          </div>
+          <div id="pk-stairstep-fields" hidden>
+            <p class="mini-label">Flat fee per tier band</p>
+            <div id="pk-stair-editor"></div>
+          </div>
+
+          <div class="grid2">
+            <label class="field"><span>Free allowance</span><input id="pk-free" type="number" min="0" value="100" /></label>
+            <label class="field"><span>Quantity</span><input id="pk-qty" type="number" min="0" value="201" /></label>
+          </div>
+
+          <div class="result-total" id="pk-total">—</div>
+          <p class="result-note" id="pk-note"></p>
+          <table class="lines">
+            <thead><tr><th>Line</th><th style="text-align:right">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead>
+            <tbody id="pk-lines"></tbody>
+          </table>
+          <p id="pk-err" class="err-banner" hidden></p>
+        </section>
+
+        <!-- ============ proration ============ -->
+        <section class="panel" id="panel-proration" aria-label="Proration">
+          <h2>Proration — a mid-cycle change</h2>
+          <p class="panel-sub">
+            A plan priced per period changes partway through. tariff
+            <strong>credits</strong> the unused old price, <strong>charges</strong>
+            the new price for the time left, and <strong>nets</strong> them — the
+            verified cross-vendor model. Drag the change marker; flip the basis
+            between real seconds and whole days.
+          </p>
+          <div class="grid2">
+            <label class="field"><span>Old plan ($ / period)</span><input id="pr-old" type="number" min="0" step="0.01" value="10" /></label>
+            <label class="field"><span>New plan ($ / period)</span><input id="pr-new" type="number" min="0" step="0.01" value="20" /></label>
+          </div>
+          <div class="mini-label">Billing period: January 2024 · change on <b id="pr-at-read">Jan 16, 12:00</b></div>
+          <div class="prorate-bar-wrap chart-wrap">
+            <svg id="prorate-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 96" role="img" aria-label="Billing period with a mid-period change marker"></svg>
+          </div>
+          <div class="slider">
+            <input id="pr-at" type="range" min="1" max="743" value="372" />
+          </div>
+          <div class="seg" role="group" aria-label="Basis" style="margin-top:6px;">
+            <button id="pr-basis-second" class="active" type="button">By second</button>
+            <button id="pr-basis-day" type="button">By day</button>
+          </div>
+          <div class="prorate-out">
+            <div class="cell credit"><div class="label">Credit (unused old)</div><div class="amount" id="pr-credit">—</div></div>
+            <div class="cell charge"><div class="label">Charge (remaining new)</div><div class="amount" id="pr-charge">—</div></div>
+            <div class="cell"><div class="label">Net billed</div><div class="amount" id="pr-net">—</div></div>
+          </div>
+          <p class="frac-line" id="pr-frac"></p>
+
+          <div class="cycle-demo">
+            <h3>Month-end cycle boundaries</h3>
+            <p class="result-note">
+              An anniversary cycle anchored on <b>Jan 31</b> clamps to each month's
+              last valid day and back — no drift to the 28th.
+            </p>
+            <div id="cycle-chips" class="cycle-chips"></div>
+          </div>
+          <p id="pr-err" class="err-banner" hidden></p>
+        </section>
+      </div>
+
+      <footer class="footer">
+        <p>
+          Runs entirely in your tab over the pure rating core compiled to
+          WebAssembly — no backend, no network. Reload to reset. Built from
+          <a href="https://github.com/zkrebbekx/tariff" rel="noopener">zkrebbekx/tariff</a>.
+        </p>
+      </footer>
+    </main>
+
+    <div id="boot" class="boot">Loading the tariff engine…</div>
+  </body>
+</html>
