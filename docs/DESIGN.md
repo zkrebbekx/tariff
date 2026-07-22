@@ -386,3 +386,104 @@ subscription lifecycle. An `Invoice` is a computed value, stored by no one.
 - No tax step (data moat, unchanged).
 - No automatic order — refusing to pick one is the design.
 - No metering — quantities still arrive pre-aggregated.
+
+## Phase 2 as built
+
+Implemented and shipped: signed `Allocate`; the proration calendar (`Period`,
+`Basis`, `Period.Fraction`, `Prorate`, `Change`/`Proration`, `NextBoundary`,
+`NextCalendarBoundary`, `CycleUnit`); and interaction-order composition
+(`Invoice`, the sealed `Step` set, `Compose`). Exact `*big.Rat` throughout — no
+fraction ever crosses `float64` — int64 minor units, one rounding per money
+boundary via the phase-1 `currency.round`, zero-dependency, sibling house style.
+Combined coverage 98.7%. All golden vectors reproduce exactly: the Stripe
+`−$5 / +$10 / $5 net` upgrade to the second, and the Chargebee day-based
+`credit −$16 / charge $32 / net $16` over a 31-day term.
+
+**Part A — signed allocation (the phase-1 limitation closed).** `Allocate` and
+the internal `allocate`/`allocateRat` now accept a negative total. It is split
+on its magnitude and the sign is reattached to every share, so the parts sum
+*exactly* to the (negative) total, the negative leftover lands on the same
+largest-remainder parts a positive leftover would, and a zero weight still
+receives exactly zero. Ratios remain non-negative. Working on the absolute value
+in `big.Int` also sidesteps the overflow of negating `math.MinInt64`.
+
+**Month-end boundary rule, stated precisely.** A boundary `k` steps from an
+anchor is `time.Date(anchorYear, anchorMonth ± k, D, …)` where `D` is
+`min(anchorDay, daysInMonth(targetYear, targetMonth))`. The clamp is always
+measured from the **original** anchor day, never a previously-clamped one, so
+there is no permanent drift: `Jan 31 → Feb 28` (or `Feb 29` in a leap year)
+`→ Mar 31 → Apr 30 → May 31 → …`, and a `Feb 29` anchor yields `Feb 28` in
+common years but returns to `Feb 29` the next leap year. `NextBoundary` returns
+the first boundary **strictly after** `from`; it estimates the step count in the
+anchor's location (an at-worst undershoot, since the boundary one step earlier
+always precedes `from`) and walks forward, so it is O(1) with no decrement pass.
+
+**DST / basis interaction, stated precisely.** `ProrateBySecond` measures real
+elapsed nanoseconds, computed from Unix seconds (`nanosBetween`) so it is both
+overflow-safe and genuinely real elapsed time: a 23-hour spring-forward day
+counts as 23 hours, a 25-hour fall-back day as 25. `ProrateByDay` counts whole
+civil days via a serial day-number (`civilDay`, Hinnant's `days_from_civil`)
+computed on the civil date in the period's location, so **every** calendar day
+counts as exactly one regardless of its wall-clock length — a DST day is one
+day, never 23/24 or 25/24. The two bases therefore give different,
+individually-correct fractions for the same window (tested at `335/743` by
+second vs `14/31` by day across the spring-forward, and `337/721` vs `14/30`
+across the fall-back).
+
+**Change / Proration signs.** `remaining = Fraction(at, End, basis)`. `Credit =
+round(−oldAmount × remaining)` — the negative exact rounded **once** (taken via
+the negated fraction, so a `MinInt64` amount is never itself negated), so under
+floor/ceil the credit is one honest rounding of the negative amount rather than
+the negation of a separately-rounded positive. `Charge = round(newAmount ×
+remaining)`, `Net = Charge + Credit`. `Credit ≤ 0`, `Charge ≥ 0`. Trial→paid is
+`oldAmount = 0 ⇒ Credit = 0`. Because `remaining ∈ [0, 1]`, neither prorated
+amount can exceed its input in magnitude, so the charge and net arithmetic
+cannot overflow — those guards are defensive.
+
+**Credit / commitment drawdown cap, stated precisely.** `DrawCredit` and
+`DrawCommitment` are **mechanically identical** — they differ only in the audit
+label and intent. The draw is `min(max(runningTotal, 0), balance)`: capped at
+the running total (a zero or negative running total draws nothing, so a credit
+never *adds* to what is owed) and at the balance (never overdrawn), and never
+negative. The draw is subtracted from the running total and from the caller's
+balance (mutated in place). A `nil` balance pointer, or a negative balance, is
+`ErrBadBalance` — a negative balance is refused rather than silently floored to
+zero.
+
+### Corrections and clarifications found in phase-2 build
+
+- **A window outside the period is not an error — it clamps to zero.** The spec
+  said `Fraction` should "error if `from > to` or the window is outside the
+  period in a way that can't be sane." On implementation, a window disjoint from
+  the period is perfectly sane: it covers none of it, so the fraction is exactly
+  `0`. The **only** error is `from > to` (an incoherent window). The covered span
+  is `[max(from, Start), min(to, End))`; wider-than-period clamps to `1`, empty
+  (`from == to`) is `0`.
+- **Day basis needs a whole-day period, and floors the window to day
+  boundaries.** Two things the spec left open. First, a period spanning **no**
+  whole calendar day (e.g. 08:00–20:00 the same date) has a zero day-denominator
+  and no day-based fraction — it returns `ErrBadPeriod` (second basis is fine).
+  Second, the day count floors each window bound to its civil midnight in the
+  period's location, which makes `used(Start, at) + remaining(at, End) = term`
+  hold **exactly** for any `at`, with the partial change-day attributed to the
+  remaining (new-plan) side. This is the deliberate, documented disambiguation
+  of "counts calendar days."
+- **`PercentOff` takes a fraction, not a whole percent.** The sketch wrote
+  `PercentOff(pct *big.Rat, …)` with examples like "10%". `pct` is the fraction
+  of the running total to remove — `big.NewRat(1, 10)` is 10% — validated to
+  `[0, 1]`; a nil, negative, or above-one percentage is `ErrBadDiscount`. The
+  discount is the exact `runningTotal × pct` rounded once via the currency.
+- **`Charged` guards the invoice currency.** Not in the sketch: a `Charged`
+  step whose charge currency does not share the invoice currency's code and
+  minor-unit scale is `ErrCurrencyMismatch`, since summing incomparable minor
+  units would silently corrupt the invoice. The rounding **mode** may differ —
+  per-charge rounding is a legitimate caller choice.
+- **A zero-effect step adds no line.** `PercentOff`/`AmountOff` of zero, a
+  `MinimumCharge` at or above the floor, and an exhausted draw each leave the
+  invoice unchanged and append nothing, keeping the lines free of `0`-value
+  clutter while preserving `sum(lines) == Total`.
+- **`Invoice` gains an audit `Subtotal`; `Line` gains a `Label`.** `Subtotal` is
+  the gross of the charge lines (before adjustments); `Total` is the net after
+  every step. `Line` grew an optional `Label` (empty on rating lines) so charges
+  and adjustments share one line type — a keyed-field append, backward
+  compatible with phase 1.

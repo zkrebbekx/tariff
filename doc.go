@@ -66,12 +66,47 @@
 // proration credit splits across lines with the sign carried through. This is
 // the property that makes reconciliation and proration penny-safe.
 //
+// # Proration
+//
+// A subscription priced per billing period that changes mid-period is rated
+// with the verified cross-vendor model — credit the unused old price, charge
+// the new price for the remaining time, and net them — not a true-forward. A
+// [Period] is a half-open instant range [Start, End) anchored in a
+// *time.Location; [Period.Fraction] returns the exact fraction of it covered by
+// a window as a [math/big.Rat], under a [Basis] of [ProrateBySecond] (real
+// elapsed time, DST-correct) or [ProrateByDay] (whole civil days in the
+// period's location, so a 23- or 25-hour DST day counts as exactly one).
+// [Prorate] scales an amount by a fraction, rounded once through the currency;
+// [Change] returns a [Proration] of Credit (negative), Charge and Net for a
+// plan change, so oldAmount = 0 is a trial-to-paid change with a zero credit.
+//
+// Cycle boundaries come from [NextBoundary] (anniversary cycles, N units from
+// an anchor) and [NextCalendarBoundary] (calendar-aligned, anchored on the
+// 1st), over a [CycleUnit] of [Monthly] or [Yearly]. The month-end case is
+// drift-free: a boundary's day is the anchor's day clamped to the target
+// month's last valid day, so a January 31 anchor steps to February 28/29 and
+// back to March 31.
+//
+// # Composition
+//
+// Charges, discounts, minimums, prepaid credits and spend commitments combine
+// in a caller-controlled order, because that order is where real systems
+// disagree — a percentage discount before or after a minimum yields different
+// totals — and tariff refuses to bake one in. [Compose] left-folds a sealed set
+// of [Step] values over an empty [Invoice] in the given order: [Charged],
+// [PercentOff], [AmountOff], [MinimumCharge], [DrawCredit] and [DrawCommitment].
+// Each step appends a labeled, auditable [Line] and moves the running total by
+// exactly that amount, so the invoice lines always reconcile to Total and the
+// sequence that produced them is visible.
+//
 // # Errors
 //
 // Failures are typed sentinels matchable with [errors.Is]:
 // [ErrNegativeQuantity], [ErrEmptyTiers], [ErrTierOrder], [ErrNoRate],
 // [ErrBadPackage], [ErrBadAllowance], [ErrBadCurrency], [ErrBadAllocation],
-// [ErrOverflow] and [ErrUnknownModel].
+// [ErrOverflow], [ErrUnknownModel], [ErrBadPeriod], [ErrBadWindow],
+// [ErrBadBasis], [ErrBadDiscount], [ErrBadFloor], [ErrBadBalance],
+// [ErrCurrencyMismatch] and [ErrNilStep].
 //
 // # Deviations from the design sketch
 //

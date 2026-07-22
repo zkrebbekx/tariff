@@ -30,6 +30,12 @@ than a hardcoded cent — `tariff` takes those three questions seriously.
   never hardcoded to cents.
 - **Five rating models.** Per-unit, graduated (tiered), volume, package/block,
   and stairstep, all with optional free allowances and a fixed fee.
+- **Proration, DST- and month-end-safe.** Credit-unused + charge-new + net, to
+  the second or by whole day, with cycle boundaries that clamp `Jan 31 → Feb 28`
+  and back to `Mar 31` without drifting.
+- **Interaction order is the caller's.** Charges, discounts, minimums, credits
+  and commitments compose as explicit, ordered, labeled steps — tariff computes
+  each order faithfully instead of guessing one.
 - **Typed errors**, matchable with `errors.Is`.
 - **Zero dependencies.** Go 1.23+.
 
@@ -109,13 +115,66 @@ tariff.KWD(tariff.RoundFloor)    // 3 decimals
 Amounts out are `int64` counts of the currency's minor unit. `tariff` ships no
 money type; wrap the amounts in whatever you like at the boundary.
 
+## Proration
+
+A plan that changes mid-period is rated with the verified cross-vendor model —
+credit the unused old price, charge the new price for the remaining time, net
+them — not a true-forward.
+
+```go
+p := tariff.Period{Start: start, End: end} // half-open [Start, End)
+pr, _ := tariff.Change(1000, 2000, usd, p, at, tariff.ProrateBySecond)
+// pr.Credit -500, pr.Charge 1000, pr.Net 500  ($10 → $20 upgrade at the midpoint)
+```
+
+`Period.Fraction` returns the exact fraction of a period a window covers, as a
+`*big.Rat`, under one of two bases:
+
+- **`ProrateBySecond`** (the default) measures real elapsed time. A day that is
+  23 or 25 hours long across a DST change contributes its true length, so the
+  fraction is never off by the missing or repeated hour.
+- **`ProrateByDay`** counts whole calendar days in the period's location, so a
+  DST day is exactly one day.
+
+Cycle boundaries handle the month-end trap without drift: `NextBoundary` clamps
+a `Jan 31` anchor to `Feb 28` (or `29` in a leap year) and then back to
+`Mar 31`, always measuring from the original anchor day. `NextCalendarBoundary`
+is the calendar-aligned wrapper (anchored on the 1st). Credits are negative
+amounts, and `Allocate` splits them across lines with the sign carried through.
+
+## Composition
+
+Charges, discounts, minimums, prepaid credits and spend commitments must
+combine, and **the order is where real billing systems disagree** — does a
+percentage discount apply before or after a minimum? Public vendor docs
+under-specify it, so `tariff` does not bake an order: it exposes the operations
+as composable steps you sequence explicitly, each a labeled, auditable line.
+
+```go
+inv, _ := tariff.Compose(usd,
+    tariff.Charged(c, 1),                              // rate a charge
+    tariff.PercentOff(big.NewRat(1, 10), "10% off"),   // fraction, not whole percent
+    tariff.MinimumCharge(9500, "minimum $95"),         // top up to the floor
+)
+// discount before minimum: $100 → $90 → floored to $95
+// swap the two steps and the $100 clears the floor untouched, ending at $90
+```
+
+The steps are `Charged`, `PercentOff`, `AmountOff`, `MinimumCharge`,
+`DrawCredit` and `DrawCommitment`. Discounts round once via the currency; credit
+and commitment draws are capped at both the running total and the balance and
+never go negative. `tariff`'s job is that each step is individually correct and
+exactly rounded — not to decide the sequence.
+
 ## Errors
 
 Failures are typed sentinels matchable with `errors.Is`: `ErrNegativeQuantity`,
 `ErrEmptyTiers`, `ErrTierOrder`, `ErrNoRate`, `ErrBadPackage`,
-`ErrBadAllowance`, `ErrBadCurrency`, `ErrBadAllocation`, `ErrOverflow` and
-`ErrUnknownModel`. A zero quantity is valid and rates to nothing; a negative one
-is an error.
+`ErrBadAllowance`, `ErrBadCurrency`, `ErrBadAllocation`, `ErrOverflow`,
+`ErrUnknownModel`, `ErrBadPeriod`, `ErrBadWindow`, `ErrBadBasis`,
+`ErrBadDiscount`, `ErrBadFloor`, `ErrBadBalance`, `ErrCurrencyMismatch` and
+`ErrNilStep`. A zero quantity is valid and rates to nothing; a negative one is
+an error.
 
 ## Non-goals
 
