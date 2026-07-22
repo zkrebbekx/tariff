@@ -1,0 +1,55 @@
+# Publishes the browser playground to GitHub Pages: the tariff rating core
+# compiled to WebAssembly, driving a hand-written static UI. No backend, no
+# build tooling — every calculation runs in the visitor's tab. The WASM
+# entrypoint lives in the root module (cmd/tariff-wasm) under a js && wasm build
+# constraint, so the root stays zero-dependency and the native CI never compiles
+# it; syscall/js is stdlib.
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          check-latest: true
+
+      - name: Build the playground WebAssembly
+        run: |
+          GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o web/tariff.wasm ./cmd/tariff-wasm
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" web/wasm_exec.js
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
