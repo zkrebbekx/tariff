@@ -10,6 +10,11 @@ Kafka, or AGPL engines that can't sit inside proprietary code. `tariff` is just
 the calculator: it takes a quantity you already aggregated and turns it into
 money. It meters nothing, stores nothing, and taxes nothing.
 
+**[Try the playground →](https://zkrebbekx.github.io/tariff/)** — a zero-backend,
+in-browser demo (the library compiled to WebAssembly): graduated vs volume
+tiering side by side, drag composition steps to watch the order flip the total,
+and prorate a mid-cycle change. No install, runs entirely in your tab.
+
 The interesting part is what happens to the fractions of a cent. Whether a
 per-unit rate of `$0.0006` is an exact rational or a drifting float, whether
 three tier lines still sum to the invoice total after rounding, and whether the
