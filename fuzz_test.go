@@ -7,26 +7,29 @@ import (
 )
 
 // FuzzAllocate asserts the two properties that make allocation penny-safe: the
-// parts always sum exactly to the total, and the split is deterministic.
+// parts always sum exactly to the total, and the split is deterministic. The
+// total is fuzzed across both signs, since a proration credit is a negative
+// total; only the ratios must stay non-negative.
 func FuzzAllocate(f *testing.F) {
 	f.Add(int64(100), int64(1), int64(1), int64(1))
 	f.Add(int64(7), int64(2), int64(3), int64(5))
 	f.Add(int64(0), int64(0), int64(0), int64(0))
 	f.Add(int64(9999), int64(11), int64(0), int64(3))
+	f.Add(int64(-62), int64(105), int64(205), int64(305))
 
 	f.Fuzz(func(t *testing.T, total, a, b, c int64) {
-		if total < 0 || a < 0 || b < 0 || c < 0 {
-			t.Skip() // Allocate's contract is non-negative inputs.
+		if a < 0 || b < 0 || c < 0 {
+			t.Skip() // Allocate's contract is non-negative ratios.
 		}
 		ratios := []int64{a, b, c}
 		got, err := Allocate(total, ratios)
 		if err != nil {
-			t.Fatalf("unexpected error for non-negative inputs: %v", err)
+			t.Fatalf("unexpected error for valid inputs: %v", err)
 		}
 		var sum int64
 		for _, p := range got {
-			if p < 0 {
-				t.Fatalf("negative part in %v", got)
+			if (total >= 0 && p < 0) || (total <= 0 && p > 0) {
+				t.Fatalf("part %d has wrong sign for total %d in %v", p, total, got)
 			}
 			sum += p
 		}

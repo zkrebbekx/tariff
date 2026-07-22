@@ -11,15 +11,17 @@ import (
 // them.
 func TestAllocateInternalGuards(t *testing.T) {
 	t.Run("Given the internal allocate core", func(t *testing.T) {
-		t.Run("Then it rejects no parts, a negative total, and a negative weight", func(t *testing.T) {
+		t.Run("Then it rejects no parts and a negative weight", func(t *testing.T) {
 			if _, err := allocate(10, nil); !errors.Is(err, ErrBadAllocation) {
 				t.Errorf("no parts: err = %v", err)
 			}
-			if _, err := allocate(-1, []*big.Int{big.NewInt(1)}); !errors.Is(err, ErrBadAllocation) {
-				t.Errorf("negative total: err = %v", err)
-			}
 			if _, err := allocate(10, []*big.Int{big.NewInt(-1)}); !errors.Is(err, ErrBadAllocation) {
 				t.Errorf("negative weight: err = %v", err)
+			}
+		})
+		t.Run("Then a negative total is now allowed, not an error", func(t *testing.T) {
+			if _, err := allocate(-1, []*big.Int{big.NewInt(1)}); err != nil {
+				t.Errorf("negative total: err = %v, want nil", err)
 			}
 		})
 	})
@@ -142,7 +144,6 @@ func TestAllocate(t *testing.T) {
 		}{
 			{"no parts", 100, nil},
 			{"negative ratio", 100, []int64{1, -1}},
-			{"negative total", -1, []int64{1, 1}},
 		}
 		for _, tc := range cases {
 			t.Run("When allocating with "+tc.name, func(t *testing.T) {
@@ -153,6 +154,67 @@ func TestAllocate(t *testing.T) {
 				})
 			})
 		}
+	})
+}
+
+func TestAllocateSigned(t *testing.T) {
+	t.Run("Given a negative total (a proration credit)", func(t *testing.T) {
+		t.Run("When split across weighted ratios", func(t *testing.T) {
+			t.Run("Then the parts are the exact mirror of the positive split", func(t *testing.T) {
+				pos, err := Allocate(62, []int64{105, 205, 305})
+				if err != nil {
+					t.Fatal(err)
+				}
+				neg, err := Allocate(-62, []int64{105, 205, 305})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i := range pos {
+					if neg[i] != -pos[i] {
+						t.Fatalf("Allocate(-62) = %v, want negation of %v", neg, pos)
+					}
+				}
+			})
+			t.Run("Then the parts sum exactly to the negative total", func(t *testing.T) {
+				got, err := Allocate(-62, []int64{105, 205, 305})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if s := sumInt64(got); s != -62 {
+					t.Fatalf("shares %v sum to %d, want -62", got, s)
+				}
+			})
+		})
+
+		t.Run("When a zero weight sits among the ratios", func(t *testing.T) {
+			t.Run("Then the zero weight receives exactly zero, not a stray negative penny", func(t *testing.T) {
+				got, err := Allocate(-7, []int64{0, 1, 1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := []int64{0, -4, -3}
+				for i := range want {
+					if got[i] != want[i] {
+						t.Fatalf("Allocate(-7, [0 1 1]) = %v, want %v", got, want)
+					}
+				}
+			})
+		})
+	})
+
+	t.Run("Given the existing positive behavior", func(t *testing.T) {
+		t.Run("Then it is unchanged by lifting the sign restriction", func(t *testing.T) {
+			got, err := Allocate(100, []int64{1, 1, 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []int64{34, 33, 33}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("Allocate(100, [1 1 1]) = %v, want %v", got, want)
+				}
+			}
+		})
 	})
 }
 

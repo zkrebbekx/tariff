@@ -84,7 +84,7 @@ Rating each tier exactly and rounding the *total* once — then allocating that
 total back across the lines — is what keeps an invoice's line items summing to
 its total. Three tiers that each end in half a cent would drift to one cent too
 many if rounded independently (`11 + 21 + 31 = 63`); `tariff` rounds the sum
-(`62`) and allocates it (`11 + 21 + 30`), so `sum(lines) == total`, exactly,
+(`62`) and allocates it (`10 + 21 + 31`), so `sum(lines) == total`, exactly,
 always.
 
 ```go
@@ -92,9 +92,11 @@ shares, _ := tariff.Allocate(100, []int64{1, 1, 1}) // [34 33 33]
 ```
 
 `Allocate` distributes the floor of each share and hands the leftover minor
-units out round-robin from the first part. It loses nothing and is
-deterministic — the property that makes reconciliation, and later proration,
-penny-safe.
+units to the parts with the largest fractional remainder (the Hamilton method),
+so a zero-ratio part receives zero and an exact part keeps its amount. It loses
+nothing and is deterministic. The total may be negative — a proration credit
+splits across lines with the sign carried through — the property that makes
+reconciliation and proration penny-safe.
 
 ## Currencies and rounding
 

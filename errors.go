@@ -41,7 +41,8 @@ var (
 	ErrBadCurrency = errors.New("tariff: invalid currency")
 
 	// ErrBadAllocation is returned by [Allocate] when asked to split across no
-	// parts, or with a negative total or a negative ratio.
+	// parts, or with a negative ratio. The total may be any sign — a negative
+	// total is a proration credit split across lines.
 	ErrBadAllocation = errors.New("tariff: invalid allocation")
 
 	// ErrOverflow is returned when an exact amount, or an allocated share, does

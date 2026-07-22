@@ -58,10 +58,13 @@
 //
 // # Allocation
 //
-// [Allocate] splits a whole amount across parts by ratio, distributing the
-// floor of each share and handing the leftover minor units out round-robin from
-// the first part. It loses nothing and is deterministic — the property that
-// makes reconciliation, and later proration, penny-safe.
+// [Allocate] splits an amount across parts by ratio, distributing the floor of
+// each share and handing the leftover minor units to the parts with the largest
+// fractional remainder (the largest-remainder, or Hamilton, method). It loses
+// nothing, is deterministic, and never credits a penny to a part that did not
+// round up — a zero ratio receives zero. The total may be negative, so a
+// proration credit splits across lines with the sign carried through. This is
+// the property that makes reconciliation and proration penny-safe.
 //
 // # Errors
 //
