@@ -67,4 +67,24 @@ var (
 	// ErrBadBasis is returned by [Period.Fraction] when the proration [Basis]
 	// is not one this package implements.
 	ErrBadBasis = errors.New("tariff: unknown proration basis")
+
+	// ErrBadDiscount is returned by a composition step when a discount is
+	// malformed: a nil percentage, a percentage outside [0, 1], or a negative
+	// fixed amount off.
+	ErrBadDiscount = errors.New("tariff: invalid discount")
+
+	// ErrBadFloor is returned by [MinimumCharge] when the floor is negative.
+	ErrBadFloor = errors.New("tariff: invalid minimum charge")
+
+	// ErrBadBalance is returned by [DrawCredit] or [DrawCommitment] when the
+	// balance pointer is nil or the balance it points to is negative.
+	ErrBadBalance = errors.New("tariff: invalid balance")
+
+	// ErrCurrencyMismatch is returned by [Compose] when a [Charged] step's
+	// currency does not share the invoice currency's code and minor-unit scale,
+	// so its amounts cannot be summed with the rest of the invoice.
+	ErrCurrencyMismatch = errors.New("tariff: currency mismatch")
+
+	// ErrNilStep is returned by [Compose] when one of the steps is nil.
+	ErrNilStep = errors.New("tariff: nil step")
 )

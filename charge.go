@@ -56,8 +56,13 @@ type Line struct {
 	// per-unit rate (package, stairstep, flat fee). It is a copy the caller may
 	// keep or mutate freely.
 	Rate *big.Rat
-	// Subtotal is this line's amount in minor units.
+	// Subtotal is this line's amount in minor units. It is negative on a credit
+	// or discount line in a composed [Invoice].
 	Subtotal int64
+	// Label is a human-readable description of an adjustment line — a discount,
+	// minimum top-up, credit or commitment draw in a composed [Invoice]. It is
+	// empty on the rating lines produced by [Charge.Rate].
+	Label string
 }
 
 // Result is the outcome of rating a charge: the rounded total in minor units,
